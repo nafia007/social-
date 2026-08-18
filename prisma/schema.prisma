@@ -1,0 +1,339 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  X
+  LINKEDIN
+  INSTAGRAM
+  FACEBOOK
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  PARTIALLY_PUBLISHED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  CAROUSEL
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  RETRYING
+  DEAD
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum NotificationType {
+  POST_PUBLISHED
+  POST_FAILED
+  ACCOUNT_DISCONNECTED
+  TEAM_INVITE
+  MENTION
+}
+
+enum WebhookProvider {
+  X
+  LINKEDIN
+  META
+  STRIPE
+}
+
+model User {
+  id            String   @id @default(cuid())
+  clerkUserId   String   @unique
+  email         String   @unique
+  name          String?
+  imageUrl      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  socialAccounts SocialAccount[] @relation("UserAccounts")
+  posts          Post[]          @relation("UserPosts")
+  teams          TeamMembership[]
+  notifications  Notification[]
+  apiKeys        ApiKey[]         @relation("UserApiKeys")
+  rssFeeds       RssFeed[]        @relation("UserRssFeeds")
+}
+
+model Team {
+  id           String   @id @default(cuid())
+  clerkOrgId   String   @unique
+  name         String
+  slug         String   @unique
+  imageUrl     String?
+  plan         String   @default("free")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  members       TeamMembership[]
+  posts         Post[]            @relation("TeamPosts")
+  socialAccounts SocialAccount[]  @relation("TeamAccounts")
+  apiKeys       ApiKey[]          @relation("TeamApiKeys")
+  rssFeeds      RssFeed[]         @relation("TeamRssFeeds")
+}
+
+model TeamMembership {
+  id           String         @id @default(cuid())
+  userId       String
+  teamId       String
+  role         MembershipRole @default(MEMBER)
+  clerkUserId  String?
+  createdAt    DateTime       @default(now())
+
+  user         User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team         Team?          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}
+
+model SocialAccount {
+  id              String   @id @default(cuid())
+  userId          String?
+  teamId          String?
+  user            User?    @relation("UserAccounts", fields: [userId], references: [id], onDelete: Cascade)
+  team            Team?    @relation("TeamAccounts", fields: [teamId], references: [id], onDelete: Cascade)
+  platform        Platform
+  platformUserId  String
+  platformUsername String?
+  accessToken     String   // Encrypted
+  refreshToken    String?  // Encrypted
+  tokenExpiresAt  DateTime?
+  scopes          String[]
+  isActive        Boolean  @default(true)
+  refreshFailures Int      @default(0)
+  lastUsedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  posts          Post[]          @relation("AccountPosts")
+  media          Media[]         @relation("AccountMedia")
+  mediaAccounts  MediaAccount[]
+
+  @@unique([userId, platform])
+  @@unique([teamId, platform])
+  @@index([platform])
+  @@index([teamId])
+}
+
+model Post {
+  id          String     @id @default(cuid())
+  userId      String?
+  teamId      String?
+  user        User?      @relation("UserPosts", fields: [userId], references: [id], onDelete: Cascade)
+  team        Team?      @relation("TeamPosts", fields: [teamId], references: [id], onDelete: Cascade)
+  accountId   String?
+  account     SocialAccount? @relation("AccountPosts", fields: [accountId], references: [id], onDelete: SetNull)
+  content     String
+  mediaIds    String[]
+  platforms   Platform[]
+  status      PostStatus @default(DRAFT)
+  scheduledAt DateTime?
+  publishedAt DateTime?
+  errorMessage Json?
+  retryCount  Int        @default(0)
+  maxRetries  Int        @default(5)
+  isEvergreen Boolean    @default(false)
+  repostCount Int        @default(0)
+  aiGenerated Boolean    @default(false)
+  timezone    String     @default("UTC")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  media       Media[]
+  analytics   Analytics[]
+  jobs        QueueJob[]
+  webhookEvents WebhookEvent[]
+
+  @@index([userId, status])
+  @@index([teamId, status])
+  @@index([scheduledAt, status])
+}
+
+model Media {
+  id            String    @id @default(cuid())
+  postId        String?
+  accountId     String?
+  post          Post?     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  account       SocialAccount? @relation("AccountMedia", fields: [accountId], references: [id], onDelete: Cascade)
+  type          MediaType
+  s3Key         String
+  url           String    // Public/CDN URL
+  thumbnailUrl  String?
+  width         Int?
+  height        Int?
+  size          Int?      // Bytes
+  mimeType      String?
+  durationMs    Int?
+  platformMediaIds Json?
+  createdAt     DateTime  @default(now())
+}
+
+model MediaAccount {
+  id        String   @id @default(cuid())
+  accountId String
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  platform  Platform
+  igAccountId   String?
+  fbPageId      String?
+  pageName      String?
+  createdAt     DateTime @default(now())
+}
+
+model QueueJob {
+  id           String   @id @default(cuid())
+  postId       String
+  platform     Platform
+  status       JobStatus @default(QUEUED)
+  attempt      Int      @default(0)
+  maxAttempts  Int      @default(5)
+  priority     Int      @default(0)
+  payload      Json?
+  result       Json?
+  error        String?
+  scheduledFor DateTime @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  post         Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@index([postId])
+}
+
+model Analytics {
+  id           String   @id @default(cuid())
+  postId       String
+  platform     Platform
+  post         Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  impressions  Int      @default(0)
+  engagements  Int      @default(0)
+  likes        Int      @default(0)
+  comments     Int      @default(0)
+  shares       Int      @default(0)
+  clicks       Int      @default(0)
+  reach        Int      @default(0)
+  fetchedAt    DateTime @default(now())
+
+  @@index([postId, platform])
+}
+
+model WebhookEvent {
+  id           String          @id @default(cuid())
+  provider     WebhookProvider
+  postId       String?
+  accountId    String?
+  eventType    String
+  payload      Json
+  signature    String?
+  processed    Boolean         @default(false)
+  processedAt  DateTime?
+  error        String?
+  createdAt    DateTime        @default(now())
+
+  post         Post?           @relation(fields: [postId], references: [id], onDelete: SetNull)
+
+  @@index([provider, processed])
+}
+
+model RssFeed {
+  id           String   @id @default(cuid())
+  userId       String?
+  teamId       String?
+  user         User?    @relation("UserRssFeeds", fields: [userId], references: [id], onDelete: Cascade)
+  team         Team?    @relation("TeamRssFeeds", fields: [teamId], references: [id], onDelete: Cascade)
+  url          String
+  title        String?
+  lastFetched  DateTime?
+  lastItemHash String?
+  autoPost     Boolean  @default(false)
+  platforms    Platform[]
+  cadenceHours Int      @default(24)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId])
+  @@index([teamId])
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  userId      String?
+  teamId      String?
+  user        User?    @relation("UserApiKeys", fields: [userId], references: [id], onDelete: Cascade)
+  team        Team?    @relation("TeamApiKeys", fields: [teamId], references: [id], onDelete: Cascade)
+  name        String
+  keyHash     String   @unique
+  prefix      String
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([teamId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  data      Json?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  teamId    String?
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([teamId])
+  @@index([createdAt])
+}
+
+model RateLimitBucket {
+  id          String   @id @default(cuid())
+  platform    Platform
+  accountId   String?
+  teamId      String?
+  tokens      Int
+  maxTokens   Int
+  refillPerSec Float
+  lastRefill  DateTime @default(now())
+
+  @@unique([platform, accountId])
+  @@unique([platform, teamId])
+}
