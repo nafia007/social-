@@ -128,12 +128,18 @@ cp .env.example .env.local
 ### 6. Set Up Database
 
 ```bash
-# Push the schema to your database
-npx prisma db push
+# Production / Deploy: apply committed migrations (idempotent, safe to re-run)
+npx prisma migrate deploy
+
+# Local dev: create/applying migrations during development
+npx prisma migrate dev
 
 # (Optional) Open Prisma Studio to inspect data
 npx prisma studio
 ```
+
+Migrations live in `prisma/migrations/` and are committed to the repo. On startup,
+`npm start` runs `prisma migrate deploy` automatically before serving traffic.
 
 ### 7. Run Development Server
 
@@ -143,14 +149,32 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with Clerk.
 
+### 8. Production Startup
+
+`npm start` runs `start.js`, which:
+
+1. Applies pending database migrations (`prisma migrate deploy`)
+2. Starts the Next.js web server (`next start`)
+3. Starts the BullMQ worker (`npm run worker`) as a managed child process
+   — set `RUN_WORKER=false` to disable the in-process worker (e.g. when you
+   run the worker as a separate deployment on serverless hosts)
+
+```bash
+npm start
+```
+
+A healthcheck is exposed at `GET /api/health` (reports DB status + worker mode).
+
 ## Deployment to Vercel
 
 1. Push your code to GitHub
 2. Import the project in Vercel
 3. Set all environment variables in Vercel dashboard
-4. The `vercel.json` file configures cron jobs automatically
+4. The `vercel.json` file configures cron jobs automatically (runs every minute)
 5. Add your Vercel domain as the OAuth redirect URI in each platform's developer console
-6. Deploy!
+6. Deploy! `npm start` applies migrations and serves the app.
+7. For the publishing queue, set `RUN_WORKER=false` on the web deployment and run a
+   separate background worker deployment with start command `npm run worker` + Redis.
 
 ## How It Works
 
@@ -181,20 +205,21 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with Clerk.
 
 ## Running the Worker
 
-The publishing engine runs as a separate long-lived process (BullMQ worker) that consumes the `publish-queue`. Start it alongside the Next.js app and Redis:
+The publishing engine runs as a separate long-lived process (BullMQ worker) that consumes the `publish-queue`. On a single host it is started automatically by `npm start`; for a multi-process setup:
 
 ```bash
 # Terminal 1 — Redis
 docker compose up -d redis
 
-# Terminal 2 — Next.js
-npm run dev
+# Terminal 2 — App (web + worker, both via start.js)
+npm start
 
-# Terminal 3 — Worker
-npm run worker
+# OR run them separately:
+npm run start:web   # next start
+npm run worker      # BullMQ worker
 ```
 
-On Vercel, run the worker as a background job or a separate deployment with `npm run worker` as the start command.
+On serverless hosts (Vercel), set `RUN_WORKER=false` on the web deployment and run the worker as a separate background deployment with start command `npm run worker` (requires Redis).
 
 ## Environment Variables
 
