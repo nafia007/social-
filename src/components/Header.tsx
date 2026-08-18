@@ -28,6 +28,9 @@ export function Header() {
             <Link href="/accounts" className="text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white">
               Accounts
             </Link>
+            <Link href="/agents" className="text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white">
+              Agents
+            </Link>
           </nav>
         </div>
 
@@ -76,6 +79,9 @@ export function Header() {
             </Link>
             <Link href="/accounts" className="text-sm font-medium text-gray-700 dark:text-gray-300">
               Accounts
+            </Link>
+            <Link href="/agents" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Agents
             </Link>
             <div className="pt-4 border-t">
               <UserButton afterSignOutUrl="/" />

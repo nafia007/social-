@@ -4,12 +4,21 @@ A full-stack multi-platform social media scheduler built with **Next.js (App Rou
 
 ## Features
 
-- 🔐 **Clerk Authentication** - Sign up, sign in, user management
-- 🔗 **Multi-Platform OAuth** - Connect X (Twitter), LinkedIn, Instagram, and Facebook accounts
+- 🔐 **Clerk Authentication** + **Organizations (Teams)** with role-based access (OWNER/ADMIN/MEMBER/VIEWER)
+- 🔗 **Multi-Platform OAuth** - Connect X (Twitter), LinkedIn, Instagram, and Facebook accounts (tokens encrypted at rest, AES-256)
+- 🖼️ **Media Pipeline** - S3 presigned uploads for images/videos/carousels, per-platform media handling
 - 📝 **Post Scheduling** - Schedule posts for future publishing or publish immediately
-- ⏰ **Automated Publishing** - Vercel Cron runs every 5 minutes to publish due posts
-- 🔒 **Secure Token Storage** - OAuth tokens encrypted at rest using AES-256
-- 📊 **Dashboard** - View connected accounts and post status
+- 🔁 **Resilient Publishing Queue** - BullMQ + Redis with exponential backoff, 429/rate-limit aware retry, dead-letter
+- 🚦 **Per-Platform Rate Limiting** - token-bucket limiter backed by DB buckets
+- 📊 **Analytics** - platform metrics (impressions, engagements, likes, comments, shares, reach) + charting
+- 🪝 **Webhook Ingestion** - verified Meta & X webhooks; mention → in-app notification
+- 🤖 **AI Assist** - OpenAI post generation, improvement, and hashtag suggestions
+- 📰 **RSS Auto-Posting** - poll feeds and auto-schedule posts from new items
+- ⏰ **Best-Time Scheduling** - suggests optimal post times from historical engagement
+- ♻️ **Evergreen Recycling** - automatically re-schedules top evergreen posts
+- 🔔 **Notifications** - in-app + optional email alerts for publish/failure/mentions
+- 🔑 **API Keys** - programmatic access via bearer tokens (per-user/team)
+- 🛠️ **Admin Observability** - queue jobs + webhook event inspection endpoints
 
 ## Tech Stack
 
@@ -119,12 +128,18 @@ cp .env.example .env.local
 ### 6. Set Up Database
 
 ```bash
-# Push the schema to your database
-npx prisma db push
+# Production / Deploy: apply committed migrations (idempotent, safe to re-run)
+npx prisma migrate deploy
+
+# Local dev: create/applying migrations during development
+npx prisma migrate dev
 
 # (Optional) Open Prisma Studio to inspect data
 npx prisma studio
 ```
+
+Migrations live in `prisma/migrations/` and are committed to the repo. On startup,
+`npm start` runs `prisma migrate deploy` automatically before serving traffic.
 
 ### 7. Run Development Server
 
@@ -134,14 +149,32 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with Clerk.
 
+### 8. Production Startup
+
+`npm start` runs `start.js`, which:
+
+1. Applies pending database migrations (`prisma migrate deploy`)
+2. Starts the Next.js web server (`next start`)
+3. Starts the BullMQ worker (`npm run worker`) as a managed child process
+   — set `RUN_WORKER=false` to disable the in-process worker (e.g. when you
+   run the worker as a separate deployment on serverless hosts)
+
+```bash
+npm start
+```
+
+A healthcheck is exposed at `GET /api/health` (reports DB status + worker mode).
+
 ## Deployment to Vercel
 
 1. Push your code to GitHub
 2. Import the project in Vercel
 3. Set all environment variables in Vercel dashboard
-4. The `vercel.json` file configures cron jobs automatically
+4. The `vercel.json` file configures cron jobs automatically (runs every minute)
 5. Add your Vercel domain as the OAuth redirect URI in each platform's developer console
-6. Deploy!
+6. Deploy! `npm start` applies migrations and serves the app.
+7. For the publishing queue, set `RUN_WORKER=false` on the web deployment and run a
+   separate background worker deployment with start command `npm run worker` + Redis.
 
 ## How It Works
 
@@ -170,18 +203,67 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with Clerk.
 - All API routes require authentication via Clerk
 - Database uses relations with cascade delete to prevent orphaned records
 
-## Limitations & Next Steps
+## Running the Worker
 
-This is a foundation that you can extend:
+The publishing engine runs as a separate long-lived process (BullMQ worker) that consumes the `publish-queue`. On a single host it is started automatically by `npm start`; for a multi-process setup:
 
-- [ ] Media upload support (currently text-only for X/LinkedIn)
-- [ ] Image/video storage (S3/Cloudinary)
-- [ ] Retry logic for failed posts
-- [ ] Analytics and engagement tracking
-- [ ] Team/organization support via Clerk Orgs
-- [ ] Webhook handling for platform events (comments, mentions)
-- [ ] Queue system (BullMQ) for higher volume
-- [ ] Rate limiting per platform
+```bash
+# Terminal 1 — Redis
+docker compose up -d redis
+
+# Terminal 2 — App (web + worker, both via start.js)
+npm start
+
+# OR run them separately:
+npm run start:web   # next start
+npm run worker      # BullMQ worker
+```
+
+On serverless hosts (Vercel), set `RUN_WORKER=false` on the web deployment and run the worker as a separate background deployment with start command `npm run worker` (requires Redis).
+
+## Environment Variables
+
+See `.env.example` for the full list. New services require:
+
+- `REDIS_URL` — BullMQ/Redis connection
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME`, `S3_CDN_URL` — media storage
+- `OPENAI_API_KEY`, `OPENAI_MODEL` — AI features
+- `SMTP_*` — optional email notifications
+- `META_WEBHOOK_SECRET`, `X_WEBHOOK_SECRET` — webhook signature verification
+
+## Architecture Overview
+
+```
+Browser ──presigned PUT──▶ S3
+   │
+   ├─ POST /api/posts ──▶ Post (SCHEDULED)
+   │                         │
+   └─ GET /api/cron/* ──▶ runCronTick()
+                           ├─ scheduleDuePosts() ──▶ BullMQ enqueue (per platform)
+                           ├─ processDueFeeds()    ──▶ RSS auto-post
+                           ├─ recycleEvergreen()   ──▶ re-schedule top posts
+                           └─ refreshRecentAnalytics()
+                                    │
+Worker (BullMQ) ── rate-limit ──▶ processScheduledPost() ──▶ platform API
+                                        └─▶ QueueJob + Analytics + Notification
+```
+
+## Autonomous Content Agents
+
+The platform includes an **autonomous agent engine** that runs content agents on a
+cadence. Each agent plans a topic, researches it, drafts platform-specific posts,
+self-reviews for quality/brand fit, and produces **AgentDrafts**. By default a human
+approves each draft (human-in-the-loop) before it becomes a scheduled `Post`; agents
+can be set to `autoPublish` to skip the gate per policy.
+
+- **Agent lifecycle** (multi-step, fully observable): `PLAN → RESEARCH → GENERATE → REVIEW → (draft) → SCHEDULE/PUBLISH`
+- **Memory**: agents record learnings, brand rules, and human feedback (`AgentMemory`) that are injected into future prompts so they improve over time.
+- **Tools**: built-in tools (hashtag generation, quality scoring) ground the agent and prevent hallucinated state. The engine degrades gracefully to a deterministic fallback when `OPENAI_API_KEY` is not configured (local/dev).
+- **Orchestration**: the cron tick also calls `runDueAgents()`, which runs every `ACTIVE` agent on its `cadenceHours`.
+- **UI**: `/agents` (list + creator + run), `/agents/[id]` (config, runs, step traces, pending drafts), and `/agents/queue` (human approval queue).
+
+### Data model
+`Agent`, `AgentRun`, `AgentStep`, `AgentDraft`, `AgentMemory`, and `Post.agentId`.
 
 ## License
 

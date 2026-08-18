@@ -92,6 +92,27 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      case 'organization.created':
+      case 'organization.updated': {
+        const orgId = (evt.data as any).id
+        if (orgId) {
+          const { syncTeamFromClerk } = await import('@/lib/teams/sync')
+          await syncTeamFromClerk(orgId).catch((e) => console.error('Team sync failed', e))
+        }
+        break
+      }
+
+      case 'organizationMembership.created':
+      case 'organizationMembership.updated':
+      case 'organizationMembership.deleted': {
+        const orgId = (evt.data as any).organization?.id
+        if (orgId) {
+          const { syncTeamFromClerk } = await import('@/lib/teams/sync')
+          await syncTeamFromClerk(orgId).catch((e) => console.error('Team sync failed', e))
+        }
+        break
+      }
+
       default:
         console.log(`Unhandled webhook event: ${eventType}`)
     }

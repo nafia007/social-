@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
-import { processScheduledPost } from '@/lib/social/publisher'
+import { scheduleDuePosts } from '@/lib/queue/scheduler'
 
 export async function GET(request: NextRequest) {
   // Verify cron secret
@@ -12,38 +11,14 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Find posts that are scheduled and due for publishing
-    const now = new Date()
-    const posts = await prisma.post.findMany({
-      where: {
-        status: 'SCHEDULED',
-        scheduledAt: { lte: now },
-      },
-      take: 50, // Limit to prevent timeout
-      orderBy: { scheduledAt: 'asc' },
-    })
-
-    console.log(`Found ${posts.length} posts to publish`)
-
-    const results = []
-
-    for (const post of posts) {
-      try {
-        await processScheduledPost(post.id)
-        results.push({ postId: post.id, success: true })
-      } catch (error) {
-        console.error(`Failed to process post ${post.id}:`, error)
-        results.push({ 
-          postId: post.id, 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        })
-      }
-    }
+    // Schedule due posts - this will enqueue jobs for the worker to process
+    const scheduledCount = await scheduleDuePosts()
 
     return NextResponse.json({ 
-      processed: results.length,
-      results 
+      scheduled: scheduledCount,
+      message: scheduledCount > 0 
+        ? `Scheduled ${scheduledCount} posts for publishing` 
+        : 'No due posts to schedule'
     })
   } catch (error) {
     console.error('Cron job error:', error)
