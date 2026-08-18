@@ -1,5 +1,6 @@
 import { decrypt } from '@/lib/encryption'
 import prisma from '@/lib/prisma'
+import { Prisma } from '@prisma/client'
 import { xOAuthClient } from '@/lib/social/x'
 import { linkedinOAuthClient } from '@/lib/social/linkedin'
 import { metaOAuthClient } from '@/lib/social/meta'
@@ -152,7 +153,7 @@ export async function processScheduledPost(postId: string): Promise<void> {
 
   // Publish to each platform
   for (const platform of post.platforms) {
-    const account = post.user.socialAccounts.find((a) => a.platform === platform)
+    const account = (post.user?.socialAccounts ?? []).find((a) => a.platform === platform)
     if (!account) {
       results[platform] = { success: false, error: 'Account not connected' }
       hasErrors = true
@@ -184,7 +185,7 @@ export async function processScheduledPost(postId: string): Promise<void> {
     data: {
       status: allSuccess ? 'PUBLISHED' : 'FAILED',
       publishedAt: allSuccess ? new Date() : null,
-      errorMessage: hasErrors ? JSON.stringify(results) : null,
+      errorMessage: hasErrors ? (JSON.stringify(results) as any) : Prisma.DbNull,
     },
   })
 }

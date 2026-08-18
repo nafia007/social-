@@ -4,12 +4,21 @@ A full-stack multi-platform social media scheduler built with **Next.js (App Rou
 
 ## Features
 
-- 🔐 **Clerk Authentication** - Sign up, sign in, user management
-- 🔗 **Multi-Platform OAuth** - Connect X (Twitter), LinkedIn, Instagram, and Facebook accounts
+- 🔐 **Clerk Authentication** + **Organizations (Teams)** with role-based access (OWNER/ADMIN/MEMBER/VIEWER)
+- 🔗 **Multi-Platform OAuth** - Connect X (Twitter), LinkedIn, Instagram, and Facebook accounts (tokens encrypted at rest, AES-256)
+- 🖼️ **Media Pipeline** - S3 presigned uploads for images/videos/carousels, per-platform media handling
 - 📝 **Post Scheduling** - Schedule posts for future publishing or publish immediately
-- ⏰ **Automated Publishing** - Vercel Cron runs every 5 minutes to publish due posts
-- 🔒 **Secure Token Storage** - OAuth tokens encrypted at rest using AES-256
-- 📊 **Dashboard** - View connected accounts and post status
+- 🔁 **Resilient Publishing Queue** - BullMQ + Redis with exponential backoff, 429/rate-limit aware retry, dead-letter
+- 🚦 **Per-Platform Rate Limiting** - token-bucket limiter backed by DB buckets
+- 📊 **Analytics** - platform metrics (impressions, engagements, likes, comments, shares, reach) + charting
+- 🪝 **Webhook Ingestion** - verified Meta & X webhooks; mention → in-app notification
+- 🤖 **AI Assist** - OpenAI post generation, improvement, and hashtag suggestions
+- 📰 **RSS Auto-Posting** - poll feeds and auto-schedule posts from new items
+- ⏰ **Best-Time Scheduling** - suggests optimal post times from historical engagement
+- ♻️ **Evergreen Recycling** - automatically re-schedules top evergreen posts
+- 🔔 **Notifications** - in-app + optional email alerts for publish/failure/mentions
+- 🔑 **API Keys** - programmatic access via bearer tokens (per-user/team)
+- 🛠️ **Admin Observability** - queue jobs + webhook event inspection endpoints
 
 ## Tech Stack
 
@@ -170,18 +179,49 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with Clerk.
 - All API routes require authentication via Clerk
 - Database uses relations with cascade delete to prevent orphaned records
 
-## Limitations & Next Steps
+## Running the Worker
 
-This is a foundation that you can extend:
+The publishing engine runs as a separate long-lived process (BullMQ worker) that consumes the `publish-queue`. Start it alongside the Next.js app and Redis:
 
-- [ ] Media upload support (currently text-only for X/LinkedIn)
-- [ ] Image/video storage (S3/Cloudinary)
-- [ ] Retry logic for failed posts
-- [ ] Analytics and engagement tracking
-- [ ] Team/organization support via Clerk Orgs
-- [ ] Webhook handling for platform events (comments, mentions)
-- [ ] Queue system (BullMQ) for higher volume
-- [ ] Rate limiting per platform
+```bash
+# Terminal 1 — Redis
+docker compose up -d redis
+
+# Terminal 2 — Next.js
+npm run dev
+
+# Terminal 3 — Worker
+npm run worker
+```
+
+On Vercel, run the worker as a background job or a separate deployment with `npm run worker` as the start command.
+
+## Environment Variables
+
+See `.env.example` for the full list. New services require:
+
+- `REDIS_URL` — BullMQ/Redis connection
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME`, `S3_CDN_URL` — media storage
+- `OPENAI_API_KEY`, `OPENAI_MODEL` — AI features
+- `SMTP_*` — optional email notifications
+- `META_WEBHOOK_SECRET`, `X_WEBHOOK_SECRET` — webhook signature verification
+
+## Architecture Overview
+
+```
+Browser ──presigned PUT──▶ S3
+   │
+   ├─ POST /api/posts ──▶ Post (SCHEDULED)
+   │                         │
+   └─ GET /api/cron/* ──▶ runCronTick()
+                           ├─ scheduleDuePosts() ──▶ BullMQ enqueue (per platform)
+                           ├─ processDueFeeds()    ──▶ RSS auto-post
+                           ├─ recycleEvergreen()   ──▶ re-schedule top posts
+                           └─ refreshRecentAnalytics()
+                                    │
+Worker (BullMQ) ── rate-limit ──▶ processScheduledPost() ──▶ platform API
+                                        └─▶ QueueJob + Analytics + Notification
+```
 
 ## License
 
