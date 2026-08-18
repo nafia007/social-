@@ -248,6 +248,23 @@ Worker (BullMQ) ── rate-limit ──▶ processScheduledPost() ──▶ pla
                                         └─▶ QueueJob + Analytics + Notification
 ```
 
+## Autonomous Content Agents
+
+The platform includes an **autonomous agent engine** that runs content agents on a
+cadence. Each agent plans a topic, researches it, drafts platform-specific posts,
+self-reviews for quality/brand fit, and produces **AgentDrafts**. By default a human
+approves each draft (human-in-the-loop) before it becomes a scheduled `Post`; agents
+can be set to `autoPublish` to skip the gate per policy.
+
+- **Agent lifecycle** (multi-step, fully observable): `PLAN → RESEARCH → GENERATE → REVIEW → (draft) → SCHEDULE/PUBLISH`
+- **Memory**: agents record learnings, brand rules, and human feedback (`AgentMemory`) that are injected into future prompts so they improve over time.
+- **Tools**: built-in tools (hashtag generation, quality scoring) ground the agent and prevent hallucinated state. The engine degrades gracefully to a deterministic fallback when `OPENAI_API_KEY` is not configured (local/dev).
+- **Orchestration**: the cron tick also calls `runDueAgents()`, which runs every `ACTIVE` agent on its `cadenceHours`.
+- **UI**: `/agents` (list + creator + run), `/agents/[id]` (config, runs, step traces, pending drafts), and `/agents/queue` (human approval queue).
+
+### Data model
+`Agent`, `AgentRun`, `AgentStep`, `AgentDraft`, `AgentMemory`, and `Post.agentId`.
+
 ## License
 
 MIT

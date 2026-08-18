@@ -60,6 +60,54 @@ enum WebhookProvider {
   STRIPE
 }
 
+enum AgentType {
+  CONTENT_STRATEGIST
+  COPYWRITER
+  RESEARCHER
+  REVIEWER
+  SCHEDULER
+}
+
+enum AgentStatus {
+  ACTIVE
+  PAUSED
+  DRAFT
+}
+
+enum AgentRunStatus {
+  PENDING
+  RUNNING
+  AWAITING_APPROVAL
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+}
+
+enum AgentStepType {
+  PLAN
+  RESEARCH
+  GENERATE
+  REVIEW
+  SCHEDULE
+  PUBLISH
+}
+
+enum AgentStepStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  SKIPPED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EDITED
+}
+
 model User {
   id            String   @id @default(cuid())
   clerkUserId   String   @unique
@@ -75,6 +123,7 @@ model User {
   notifications  Notification[]
   apiKeys        ApiKey[]         @relation("UserApiKeys")
   rssFeeds       RssFeed[]        @relation("UserRssFeeds")
+  agents         Agent[]          @relation("UserAgents")
 }
 
 model Team {
@@ -92,6 +141,7 @@ model Team {
   socialAccounts SocialAccount[]  @relation("TeamAccounts")
   apiKeys       ApiKey[]          @relation("TeamApiKeys")
   rssFeeds      RssFeed[]         @relation("TeamRssFeeds")
+  agents        Agent[]           @relation("TeamAgents")
 }
 
 model TeamMembership {
@@ -159,6 +209,8 @@ model Post {
   repostCount Int        @default(0)
   aiGenerated Boolean    @default(false)
   timezone    String     @default("UTC")
+  agentId     String?
+  agent        Agent?     @relation("AgentPosts", fields: [agentId], references: [id], onDelete: SetNull)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -170,6 +222,129 @@ model Post {
   @@index([userId, status])
   @@index([teamId, status])
   @@index([scheduledAt, status])
+  @@index([agentId])
+}
+
+model Agent {
+  id           String      @id @default(cuid())
+  userId       String?
+  teamId       String?
+  user         User?       @relation("UserAgents", fields: [userId], references: [id], onDelete: Cascade)
+  team         Team?       @relation("TeamAgents", fields: [teamId], references: [id], onDelete: Cascade)
+
+  name         String
+  description  String?
+  type         AgentType   @default(CONTENT_STRATEGIST)
+  status       AgentStatus @default(ACTIVE)
+  goal         String // high-level objective, e.g. "Grow our X audience with daily AI tips"
+  tone         String      @default("professional")
+  topics       String[]    @default([])
+  hashtags     String[]    @default([])
+  platforms    Platform[]  @default([X])
+  cadenceHours Int         @default(24)
+  autoPublish  Boolean     @default(false) // if true, skip human approval (per-agent policy)
+  model        String      @default("gpt-4o-mini")
+  config       Json?       // extra knobs (maxVariants, reviewStrictness, etc.)
+  lastRunAt    DateTime?
+  runCount     Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  runs         AgentRun[]
+  drafts       AgentDraft[]
+  memories     AgentMemory[]
+  posts        Post[]          @relation("AgentPosts")
+
+  @@index([userId])
+  @@index([teamId])
+  @@index([status])
+}
+
+model AgentRun {
+  id           String         @id @default(cuid())
+  agentId      String
+  agent        Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  status       AgentRunStatus @default(PENDING)
+  goal         String
+  scheduleFor  DateTime?      // when this run was due to execute
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  error        String?
+  output       Json?          // run-level summary (e.g. draft ids created)
+  createdAt    DateTime       @default(now())
+
+  steps        AgentStep[]
+  drafts       AgentDraft[]
+
+  @@index([agentId, status])
+  @@index([status, scheduleFor])
+}
+
+model AgentStep {
+  id           String         @id @default(cuid())
+  runId        String
+  run          AgentRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  type         AgentStepType
+  status       AgentStepStatus @default(PENDING)
+  order        Int            @default(0)
+  prompt       String?        // the prompt/instruction used
+  input        Json?
+  output       Json?          // model / tool output
+  tokensUsed   Int?
+  model        String?
+  error        String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime       @default(now())
+
+  @@index([runId])
+}
+
+model AgentDraft {
+  id           String         @id @default(cuid())
+  agentId      String
+  agent        Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  runId        String?
+  run          AgentRun?      @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  // The candidate content
+  content      String
+  platforms    Platform[]
+  mediaIds     String[]       @default([])
+  tone         String?
+  topic        String?
+  hashtags     String[]       @default([])
+  notes        String?        // review notes from the REVIEWER agent
+  agentScore   Int?           // 0-100 quality score from reviewer
+
+  // Approval gate (human-in-the-loop)
+  approval     ApprovalStatus @default(PENDING)
+  reviewedById String?        // clerkUserId of approver
+  reviewedAt   DateTime?
+  editedContent String?       // final content after human edit
+  postId       String?        // linked Post once approved (scheduled/published)
+
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([agentId, approval])
+  @@index([runId])
+  @@index([approval])
+}
+
+model AgentMemory {
+  id           String   @id @default(cuid())
+  agentId      String
+  agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  // Episodic/semantic memory: learnings, brand rules, past performance
+  kind         String   @default("learning") // learning | brand_rule | feedback | performance
+  content      String
+  weight       Float    @default(1.0)
+  source       String?  // e.g. "run:<id>" or "human"
+  createdAt    DateTime @default(now())
+
+  @@index([agentId, kind])
 }
 
 model Media {

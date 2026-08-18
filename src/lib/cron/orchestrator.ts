@@ -10,12 +10,14 @@ export async function runCronTick(): Promise<{
   feedsProcessed: number
   recycled: number
   analyticsRefreshed: number
+  agentsRun: number
 }> {
   const result = {
     duePosts: 0,
     feedsProcessed: 0,
     recycled: 0,
     analyticsRefreshed: 0,
+    agentsRun: 0,
   }
 
   // 1. Enqueue posts that are due
@@ -44,6 +46,13 @@ export async function runCronTick(): Promise<{
     result.analyticsRefreshed = await refreshRecentAnalytics()
   } catch (err) {
     console.error('refreshAnalytics failed:', err)
+  }
+
+  // 5. Run due autonomous agents (throttled by cadence)
+  try {
+    result.agentsRun = await runDueAgentsTick()
+  } catch (err) {
+    console.error('runDueAgents failed:', err)
   }
 
   return result
@@ -117,4 +126,14 @@ async function refreshRecentAnalytics(): Promise<number> {
     }
   }
   return count
+}
+
+async function runDueAgentsTick(): Promise<number> {
+  const { runDueAgents } = await import('@/lib/agents/run').catch(() => ({ runDueAgents: null as any }))
+  if (!runDueAgents) return 0
+  try {
+    return await runDueAgents()
+  } catch {
+    return 0
+  }
 }
